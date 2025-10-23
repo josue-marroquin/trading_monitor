@@ -1,0 +1,121 @@
+import Dat
+import mysql.connector
+import time
+
+DB_CONFIG = Dat.db_config
+
+
+###---- Sincronizar posiciones (Insertar o Actualizar en lote)
+def sync_positions(positions):
+    """
+    Actualiza o inserta posiciones activas desde el feed de Binance.
+    Si una posición ya no aparece en la API, se marca como inactiva (position_status = 0).
+    Ahora optimizado con executemany() para insertar/actualizar todas las posiciones de una vez.
+    """
+    try:
+        connection = mysql.connector.connect(**DB_CONFIG)
+        cursor = connection.cursor()
+
+        # Obtener símbolos activos actuales en DB
+        cursor.execute("SELECT symbol FROM trading_positions WHERE position_status = 1;")
+        existing_symbols = {row[0] for row in cursor.fetchall()}
+
+        # Preparar símbolos activos desde la API
+        api_symbols = {pos['symbol'] for pos in positions}
+
+        # --- Preparar los datos para inserción/actualización ---
+        data_list = []
+        for position in positions:
+            last_trade_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(position['updateTime'] / 1000))
+            data_list.append((
+                position['symbol'], position['positionExchange'], position['positionAmt'], position['entryPrice'],
+                position['marginType'], position['positionSide'], position['positionDirection'], position['leverage'],
+                position['liquidationPrice'], position['markPrice'], position['unRealizedProfit'],
+                last_trade_time, 1
+            ))
+
+        upsert_query = """
+            INSERT INTO trading_positions (
+                symbol, position_exchange, position_amount, entry_price, margin_type, position_side, 
+                position_direction, leverage, liquidation_price, mark_price, unrealized_profit, 
+                last_trade_time, position_status
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                position_amount = VALUES(position_amount),
+                entry_price = VALUES(entry_price),
+                position_direction = VALUES(position_direction),
+                mark_price = VALUES(mark_price),
+                unrealized_profit = VALUES(unrealized_profit),
+                last_trade_time = VALUES(last_trade_time),
+                position_status = 1;
+        """
+
+        # ✅ Ejecutar todos los inserts/updates en lote
+        if data_list:
+            cursor.executemany(upsert_query, data_list)
+            print(f"{len(data_list)} posiciones sincronizadas en lote.")
+
+        # --- Marcar posiciones cerradas como inactivas ---
+        closed_symbols = existing_symbols - api_symbols
+        if closed_symbols:
+            placeholders = ', '.join(['%s'] * len(closed_symbols))
+            deactivate_query = f"UPDATE trading_positions SET position_status = 0 WHERE symbol IN ({placeholders});"
+            cursor.execute(deactivate_query, tuple(closed_symbols))
+            print(f"Se marcaron como inactivas: {', '.join(closed_symbols)}")
+
+        connection.commit()
+
+    except mysql.connector.Error as error:
+        print(f"Error al sincronizar posiciones: {error}")
+
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
+
+
+###---- Actualizar métricas dinámicas de la posición (Trailing Stop, TP, Volumen, Cambio)
+def update_position_metrics(symbol, trailing_stop=None, take_profit=None, volume=None, change_=None):
+    """
+    Actualiza los valores dinámicos de una posición específica.
+    Solo actualiza los campos provistos (no sobrescribe los nulos).
+    """
+    try:
+        connection = mysql.connector.connect(**DB_CONFIG)
+        cursor = connection.cursor()
+
+        fields = []
+        values = []
+
+        if trailing_stop is not None:
+            fields.append("trailing_stop = %s")
+            values.append(trailing_stop)
+        if take_profit is not None:
+            fields.append("take_profit = %s")
+            values.append(take_profit)
+        if volume is not None:
+            fields.append("volume = %s")
+            values.append(volume)
+        if change_ is not None:
+            fields.append("change_ = %s")
+            values.append(change_)
+
+        if not fields:
+            print(f"No se proporcionaron campos para actualizar en {symbol}.")
+            return
+
+        query = f"UPDATE trading_positions SET {', '.join(fields)} WHERE symbol = %s;"
+        values.append(symbol)
+
+        cursor.execute(query, tuple(values))
+        connection.commit()
+
+        print(f"Actualización de métricas completada para {symbol} → {fields}")
+
+    except mysql.connector.Error as error:
+        print(f"Error al actualizar métricas de posición: {error}")
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
