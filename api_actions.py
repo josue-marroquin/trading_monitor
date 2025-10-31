@@ -5,11 +5,11 @@ import hashlib
 import Dat
 from endpoints import binance_api
 
-BASE_URL = binance_api.BASE_URL
-POSITION_ENDPOINT = binance_api.POSITION_ENDPOINT
-ORDER_ENDPOINT = binance_api.ORDER_ENDPOINT
-OPEN_ORDERS_ENDPOINT = binance_api.OPEN_ORDERS_ENDPOINT
-ALL_OPEN_ORDERS_ENDPOINT = binance_api.ALL_OPEN_ORDERS_ENDPOINT     # To remove previous STOP MARKET orders
+BASE_URL = binance_api['BASE_URL']
+POSITION_ENDPOINT = binance_api['POSITION_ENDPOINT']
+ORDER_ENDPOINT = binance_api['ORDER_ENDPOINT']
+OPEN_ORDERS_ENDPOINT = binance_api['OPEN_ORDERS_ENDPOINT']
+ALL_OPEN_ORDERS_ENDPOINT = binance_api['ALL_OPEN_ORDERS_ENDPOINT']     # To remove previous STOP MARKET orders
 API_KEY = Dat.BinK
 API_SECRET = Dat.BinS
 rounding = 2    # Rounding for coins < 0.999

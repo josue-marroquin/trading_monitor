@@ -1,5 +1,6 @@
 import Dat
 import mysql.connector
+from datetime import datetime
 import time
 
 DB_CONFIG = Dat.db_config
@@ -29,17 +30,16 @@ def sync_positions(positions):
             data_list.append((
                 position['symbol'], position['positionExchange'], position['positionAmt'], position['entryPrice'],
                 position['marginType'], position['positionSide'], position['positionDirection'], position['leverage'],
-                position['liquidationPrice'], position['markPrice'], position['unRealizedProfit'],
-                last_trade_time, 1
+                position['liquidationPrice'], position['markPrice'], position['unRealizedProfit'], last_trade_time, 1, position['breakEvenPrice']
             ))
 
         insert_query = """
             INSERT INTO trading_positions (
                 symbol, position_exchange, position_amount, entry_price, margin_type, position_side, 
                 position_direction, leverage, liquidation_price, mark_price, unrealized_profit, 
-                last_trade_time, position_status
+                last_trade_time, position_status, breakeven_price
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 position_amount = VALUES(position_amount),
                 entry_price = VALUES(entry_price),
@@ -47,19 +47,25 @@ def sync_positions(positions):
                 mark_price = VALUES(mark_price),
                 unrealized_profit = VALUES(unrealized_profit),
                 last_trade_time = VALUES(last_trade_time),
-                position_status = 1;
+                position_status = 1,
+                breakeven_price = VALUES(breakeven_price)
         """
 
         # ✅ Ejecutar todos los inserts/updates en lote
         cursor_insert_update = connection.cursor()
         if data_list:
             cursor_insert_update.executemany(insert_query, data_list)
-            print(f"\n{len(data_list)} posiciones sincronizadas en lote.")
+            # print(f"\n{len(data_list)} posiciones sincronizadas en lote.")
 
         # --- Marcar posiciones cerradas como inactivas y restablecer valores
         closed_symbols = existing_symbols - api_symbols
         if closed_symbols:
             placeholders = ', '.join(['%s'] * len(closed_symbols))
+            update_state_table = f"""
+                                UPDATE position_state
+                                SET status_ = 0
+                                WHERE symbol IN ({placeholders});
+                            """
             deactivate_query = f"""
                                 UPDATE trading_positions
                                 SET position_amount = 0.0,
@@ -69,12 +75,17 @@ def sync_positions(positions):
                                     unrealized_profit = 0.0,
                                     trailing_stop = 0.0,
                                     take_profit = 0.0,
-                                    position_status = 0
+                                    position_status = 0,
+                                    info = '',
+                                    tp_set = 0,
+                                    sl_set = 0,
+                                    breakeven_price = 0.0
                                 WHERE symbol IN ({placeholders});
                             """
+            cursor_insert_update.execute(update_state_table, tuple(closed_symbols))
             cursor_insert_update.execute(deactivate_query, tuple(closed_symbols))
             print(f"Valores restablecidos para operaciones inactivas.")
-            print(f"Se marcaron como inactivas: {', '.join(closed_symbols)}")
+            # print(f"Se marcaron como inactivas: {', '.join(closed_symbols)}")
 
         connection.commit()
         cursor_insert_update.close()
@@ -88,7 +99,7 @@ def sync_positions(positions):
 
 
 ###---- Actualizar métricas dinámicas de la posición (Trailing Stop, TP, Volumen, Cambio)
-def update_position_metrics(symbol, trailing_stop=None, take_profit=None, volume=None, change_=None):
+def update_position_metrics(symbol, trailing_stop=None, take_profit=None, volume=None, change_=None, info=None):
     """
     Actualiza los valores dinámicos de una posición específica.
     Solo actualiza los campos provistos (no sobrescribe los nulos).
@@ -112,6 +123,9 @@ def update_position_metrics(symbol, trailing_stop=None, take_profit=None, volume
         if change_ is not None:
             fields.append("change_ = %s")
             values.append(change_)
+        if info is not None:
+            fields.append("info = %s")
+            values.append(info)
 
         if not fields:
             print(f"No se proporcionaron campos para actualizar en {symbol}.")
@@ -173,3 +187,36 @@ def check_tp_sl_status(symbol):
     if not row:
         return {"tp_set": 0, "sl_set": 0}
     return {"tp_set": row[0], "sl_set": row[1]}
+
+
+def sync_info(symbol, state=None):
+    """Keeping track of all changes made by the bot."""
+    if not state:
+        return  # No hace nada si no hay nota
+    
+    try:
+        connection = mysql.connector.connect(**DB_CONFIG)
+        cursor = connection.cursor()
+
+        insert_state = """
+                    INSERT INTO position_state (symbol, state, updated_at, status_)
+                    VALUES (%s, %s, NOW(), 1)
+                    ON DUPLICATE KEY UPDATE
+                        state = VALUES(state),
+                        updated_at = NOW(),
+                        status_ = 1
+                """
+
+        data = (symbol, state)
+        cursor.execute(insert_state, data)
+        connection.commit()
+
+        # print(f"[INFO] Log inserted for {symbol} at {datetime.now()}")
+    
+    except mysql.connector.Error as err:
+        print(f"[ERROR] Database error: {err}")
+
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()

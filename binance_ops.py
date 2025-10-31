@@ -1,17 +1,21 @@
 import store_data
 import api_actions
+import place_orders
 import time
 
-TP_VAL = 1.020   # +3% TP
-SL_VAL = 0.980   # -1% SL
-TRAIL_PERCENT = 0.25
-ACTIVATION_BUFFER = 0.5
+TP_VAL = 1.030   # +2% TP
+SL_VAL = 0.980   # -2% SL
+TRAIL_PERCENT = 0.4
+ACTIVATION_BUFFER = 0.55
 
 ########-----MAIN LOOP------#########
 if __name__ == "__main__":
 
     counter = 0
     pnl_sum = 0
+
+    # ✅ Cache for TP/SL status to avoid repeated DB/API checks
+    tp_status_cache = {}
 
     while True:
         positions_info = api_actions.get_positions()
@@ -27,12 +31,11 @@ if __name__ == "__main__":
             volume = float(amt * entry)
             pnl_perc = round(float((pnl / volume) * 100), 2)
             position["positionDirection"] = api_actions.determine_position_direction(position['positionAmt'])
-            ## Validating Token's price to establish rounding
             rounding = 2 if entry > 0.999 else 5
 
             print(f"\n## {symbol} - {position['positionDirection']} - Entry: {entry}, Amount: {amt}, PnL: {pnl} (%: {pnl_perc}), Volume: {volume}")
 
-            ## Establishing SL/TP parameters
+            # --- Establish SL/TP parameters ---
             if float(position['positionAmt']) > 0:  # LONG
                 side = "SELL"
                 stop_loss = round(entry * SL_VAL, rounding)
@@ -42,40 +45,48 @@ if __name__ == "__main__":
                 stop_loss = round(entry * TP_VAL, rounding)
                 take_profit = round(entry * SL_VAL, rounding)
 
-            ## Setting TAKE PROFIT only if it doesn't Exist already
-            if not api_actions.has_existing_sl_tp(symbol):
-                print(f"Placing SL/TP for {symbol}: SL={stop_loss}, TP={take_profit}")
-                api_actions.place_take_profit(symbol, side, take_profit)  # Setting only TP
-                api_actions.place_stop_loss(symbol, side, stop_loss)  # Setting only TP
-            else:
-                print(f"Skipped {symbol} — existing TP already active.")
+            # --- TP/SL cache check ---
+            tp_exists = tp_status_cache.get(symbol, None)
 
-            ## Sending Signal to check if Trailing Stop needs to be set up.
+            if tp_exists is None:
+                # Not in cache → check DB once and store
+                status = store_data.check_tp_sl_status(symbol)
+                tp_exists = bool(status["tp_set"])
+                tp_status_cache[symbol] = tp_exists
+                print(f"[CACHE MISS] Checked DB for {symbol}: TP set = {tp_exists}")
+                print(tp_status_cache)
+            else:
+                print(f"[CACHE HIT] {symbol}: TP already cached = {tp_exists}")
+
+            # --- Place TP/SL only if not set ---
+            if not tp_exists:
+                print(f"Placing SL/TP for {symbol}: SL={stop_loss}, TP={take_profit}")
+                place_orders.place_take_profit(symbol, side, take_profit)
+                place_orders.place_stop_loss(symbol, side, stop_loss)
+                store_data.mark_tp_sl_as_set(symbol, tp_set=1)
+                tp_status_cache[symbol] = True  # ✅ Update cache immediately
+            else:
+                print(f"Skipped {symbol} — TP already active or cached.")
+
+            # --- Trailing Stop Management ---
             if pnl > 0:
-                api_actions.update_trailing_stop(position, trail_perc=TRAIL_PERCENT, activation_buffer=ACTIVATION_BUFFER)
+                place_orders.update_trailing_stop(position, trail_perc=TRAIL_PERCENT, activation_buffer=ACTIVATION_BUFFER)
             else:
                 print("Negative PnL, not setting Trailing Stop yet..")
 
-            # Append position to the buffer list (we’ll insert all later)
+            # Append position for bulk DB sync
             all_positions_buffer.append(position)
-
 
         # ✅ Perform one single DB sync for all positions collected
         if all_positions_buffer:
             store_data.sync_positions(all_positions_buffer)
 
-
-        ## Check DB cache to manage TP/SL
-        status = store_data.check_tp_sl_status(symbol)
-        tp_exists = bool(status["tp_set"])
-
-        if not tp_exists:
-            print(f"Placing TP for {symbol}: {take_profit}")
-            store_data.mark_tp_sl_as_set(symbol, tp_set=1)
-        else:
-            print(f"Skipped {symbol} — TP already marked in DB.")
+        # ✅ Cache auto-refresh every 30 min
+        if counter % 30 == 0:  # 15s × 120 = 30 min
+            print("\n[Cache Refresh] Clearing TP/SL status cache.")
+            tp_status_cache.clear()
 
         counter += 1
         print(f"Total unrealized PnL this cycle: {round(pnl_sum, 2)} \n")
         pnl_sum = 0
-        time.sleep(10)
+        time.sleep(5)
