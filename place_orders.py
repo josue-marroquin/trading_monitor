@@ -72,6 +72,7 @@ def update_trailing_stop(position, trail_perc, activation_buffer):
         print(f"[{symbol}] Failed to fetch open orders: {response.text}")
         return
     open_orders = response.json()
+
     # Identify existing Stop Loss (if any)
     existing_sl = next((float(o["stopPrice"]) for o in open_orders if o["type"] == "STOP_MARKET"), None)
     print(f"Existing SL: {existing_sl}")
@@ -83,12 +84,22 @@ def update_trailing_stop(position, trail_perc, activation_buffer):
     # --- Step 1: BREAKEVEN window trigger (LOWER_TRIGGER % < Price % < activation_buffer %)
     # Coloca un SL en break-even SOLO si:
     #  - No existe aún un SL, o
-    #  - El SL existente está “peor” que el break-even, considerando la dirección
+    #  - El SL existente está “peor” que el break-even, considerando la dirección,
+    #  - Y el SL actual NO está ya en breakeven (dentro de margen de tolerancia)
+
+    TOLERANCE = 0.0001  # 0.01% de margen para evitar duplicados por redondeo
 
     if direction == "LONG":
-        condition_sl_weaker = (existing_sl is None or existing_sl < break_even)
+        condition_sl_weaker = (existing_sl is None or existing_sl < break_even * (1 - TOLERANCE))
+        condition_already_be = existing_sl and abs(existing_sl - break_even) / break_even < TOLERANCE
     else:  # SHORT
-        condition_sl_weaker = (existing_sl is None or existing_sl > break_even)
+        condition_sl_weaker = (existing_sl is None or existing_sl > break_even * (1 + TOLERANCE))
+        condition_already_be = existing_sl and abs(existing_sl - break_even) / break_even < TOLERANCE
+
+    if condition_already_be:
+        print(f"[{symbol}] Existing SL is already at breakeven ({existing_sl}), skipping re-placement.")
+        sync_info(symbol=symbol, state=14)  # opcional: nuevo código para "BE ya existe"
+        return
 
     if condition_sl_weaker and LOWER_TRIGGER < price_change < activation_buffer:
         new_sl = round(break_even, rounding)
@@ -96,10 +107,11 @@ def update_trailing_stop(position, trail_perc, activation_buffer):
         print(f"[{symbol}] ΔPrice {price_change:.2f}% dentro de ventana ({LOWER_TRIGGER:.2f}–{activation_buffer:.2f}) → "
             f"estableciendo SL inicial en breakeven {new_sl}")
 
-        place_stop_loss(symbol, side, new_sl)  # Coloca el primer trailing stop en el punto de equilibrio
+        place_stop_loss(symbol, side, new_sl)
         update_position_metrics(symbol=symbol, trailing_stop=new_sl, info='Break even SL set')
         sync_info(symbol=symbol, state=12)
         return
+
 
     # --- Step 2: Skip if below activation buffer
     ## Only Updates Logs - By this point break_even sl should already have been placed
@@ -127,6 +139,8 @@ def update_trailing_stop(position, trail_perc, activation_buffer):
             # print(f"[{symbol}] SL already optimal ({existing_sl}), no update needed.")
             sync_info(symbol=symbol,state=10)
             return
+    # Trailing Stop Enhancement if pirce rises above 1%    
+    trail_perc = 0.75 if price_change >= 1.0 else trail_perc
 
     # --- Step 5: Place or update SL With the new better SL
     ## By this point all other options have been used and Trailing Stop is being updated.
