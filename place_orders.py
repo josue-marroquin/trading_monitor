@@ -7,6 +7,7 @@ from store_data import update_position_metrics, sync_info
 
 ###---- Using this to trigger breakEven SL
 LOWER_TRIGGER = 0.35
+TOLERANCE = 0.0001  # 0.01% de margen para evitar duplicados por redondeo
 API_KEY = Dat.BinK
 API_SECRET = Dat.BinS
 
@@ -86,9 +87,7 @@ def update_trailing_stop(position, trail_perc, activation_buffer):
     #  - No existe aún un SL, o
     #  - El SL existente está “peor” que el break-even, considerando la dirección,
     #  - Y el SL actual NO está ya en breakeven (dentro de margen de tolerancia)
-
-    TOLERANCE = 0.0001  # 0.01% de margen para evitar duplicados por redondeo
-
+    
     if direction == "LONG":
         condition_sl_weaker = (existing_sl is None or existing_sl < break_even * (1 - TOLERANCE))
         condition_already_be = existing_sl and abs(existing_sl - break_even) / break_even < TOLERANCE
