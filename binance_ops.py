@@ -3,10 +3,12 @@ import api_actions
 import place_orders
 import time
 
-TP_VAL = 1.030   # +2% TP
-SL_VAL = 0.980   # -2% SL
-TRAIL_PERCENT = 0.4
-ACTIVATION_BUFFER = 0.55
+LONG_TP_VAL = 1.03
+LONG_SL_VAL = 0.98
+SHORT_TP_VAL = 0.97
+SHORT_SL_VAL = 1.02
+TRAIL_PERCENT = 0.35
+ACTIVATION_BUFFER = 0.6
 
 ########-----MAIN LOOP------#########
 if __name__ == "__main__":
@@ -30,20 +32,22 @@ if __name__ == "__main__":
             pnl_sum += pnl
             volume = float(amt * entry)
             pnl_perc = round(float((pnl / volume) * 100), 2)
-            position["positionDirection"] = api_actions.determine_position_direction(position['positionAmt'])
             rounding = 2 if entry > 0.999 else 5
-
-            print(f"\n## {symbol} - {position['positionDirection']} - Entry: {entry}, Amount: {amt}, PnL: {pnl} (%: {pnl_perc}), Volume: {volume}")
+            position['positionDirection'] = ""
 
             # --- Establish SL/TP parameters ---
             if float(position['positionAmt']) > 0:  # LONG
                 side = "SELL"
-                stop_loss = round(entry * SL_VAL, rounding)
-                take_profit = round(entry * TP_VAL, rounding)
+                position["positionDirection"] = "LONG"
+                stop_loss = round(entry * LONG_SL_VAL, rounding)
+                take_profit = round(entry * LONG_TP_VAL, rounding)
             else:  # SHORT
                 side = "BUY"
-                stop_loss = round(entry * TP_VAL, rounding)
-                take_profit = round(entry * SL_VAL, rounding)
+                position["positionDirection"] = "SHORT"
+                stop_loss = round(entry * SHORT_SL_VAL, rounding)
+                take_profit = round(entry * SHORT_TP_VAL, rounding)
+
+            print(f"\n## {symbol} - {position['positionDirection']} - Entry: {entry}, Amount: {amt}, PnL: {pnl} (%: {pnl_perc}), Volume: {volume}")
 
             # --- TP/SL cache check ---
             tp_exists = tp_status_cache.get(symbol, None)
